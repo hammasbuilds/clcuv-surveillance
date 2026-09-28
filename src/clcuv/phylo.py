@@ -28,6 +28,46 @@ class PhyloError(ValueError):
     pass
 
 
+# Characters that Newick gives a meaning to. A label containing one of these must be
+# quoted or the tree reparses as a different tree - and `export_alignment.py` writes
+# labels like "MW183409.1 | Punjab | 2019", which contains two of them.
+NEWICK_SPECIALS = set(" \t\n()[]':;,")
+
+
+def quote_newick(label: str) -> str:
+    """A label safe to write into a Newick string.
+
+    Unquoted Newick treats a space as a name terminator and `:` as the start of a
+    branch length, so `MW183409.1 Punjab (2019)` silently becomes a malformed tree that
+    viewers read as several taxa. Single quotes are the spec's escape, with an internal
+    quote written twice.
+    """
+    if label and not (NEWICK_SPECIALS & set(label)):
+        return label
+    return "'" + label.replace("'", "''") + "'"
+
+
+def _check_finite(names: Sequence[str], matrix: list[list[float]]) -> None:
+    """Refuse a matrix holding `inf`, and say which pair caused it.
+
+    `jukes_cantor` returns infinity at p >= 0.75 on purpose: the distance genuinely
+    cannot be estimated there. Tree building cannot use that value - in
+    neighbour-joining `inf - inf` becomes NaN, every Q comparison is then false, and
+    the algorithm falls off the end with a TypeError that says nothing about the data.
+    Failing here, naming the pair, is the difference between a bug and an answer.
+    """
+    for i, row in enumerate(matrix):
+        for j, value in enumerate(row):
+            if not math.isfinite(value):
+                raise PhyloError(
+                    f"distance between {names[i]} and {names[j]} is saturated "
+                    "(p >= 0.75, Jukes-Cantor undefined), so no tree can be built from "
+                    "this matrix. These sequences are too divergent to place with a "
+                    "distance method - drop the outgroup, or pass correct=False to "
+                    "distance_matrix to use uncorrected p-distances."
+                )
+
+
 def p_distance(a: str, b: str) -> float:
     """Proportion of compared sites that differ.
 
@@ -101,7 +141,7 @@ class Node:
 
     def newick(self) -> str:
         if self.is_leaf:
-            return self.name
+            return quote_newick(self.name)
         inner = ",".join(f"{child.newick()}:{length:.6f}" for child, length in self.children)
         return f"({inner})"
 
@@ -121,6 +161,7 @@ def upgma(names: Sequence[str], matrix: list[list[float]]) -> Node:
     """Average-linkage clustering. Assumes a molecular clock — see the module note."""
     if len(names) < 2:
         raise PhyloError("need at least two sequences")
+    _check_finite(names, matrix)
 
     working = [row[:] for row in matrix]
     nodes: dict[int, Node] = {i: Node(name=n) for i, n in enumerate(names)}
@@ -171,6 +212,7 @@ def neighbour_joining(names: Sequence[str], matrix: list[list[float]]) -> Node:
     n = len(names)
     if n < 2:
         raise PhyloError("need at least two sequences")
+    _check_finite(names, matrix)
     if n == 2:
         root = Node()
         root.children = [
@@ -194,6 +236,11 @@ def neighbour_joining(names: Sequence[str], matrix: list[list[float]]) -> Node:
                 q = (size - 2) * working[i][j] - totals[i] - totals[j]
                 if q < best_q:
                     best_q, best_pair = q, (i, j)
+
+        if best_pair is None:
+            # Unreachable while `_check_finite` runs first, and kept because the failure
+            # it replaces was a TypeError from unpacking None several lines later.
+            raise PhyloError("no pair could be joined; the distance matrix is not usable")
 
         i, j = best_pair
         d_ij = working[i][j]

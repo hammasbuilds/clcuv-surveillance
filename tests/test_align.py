@@ -13,6 +13,9 @@ from clcuv.align import (
     alignment_report,
     check_comparable,
     choose_centre,
+    low_identity_rows,
+    odd_prefixes,
+    reverse_complement,
 )
 
 BASES = "ACGT"
@@ -120,12 +123,80 @@ def test_a_single_sequence_is_not_an_alignment():
         check_comparable(["ACGT"])
 
 
-def test_one_odd_sequence_among_many_does_not_trip_the_guard():
-    """80% agreement is the bar: one bad submission should not block the analysis."""
+def test_one_odd_sequence_among_many_does_not_trip_the_batch_guard():
+    """80% agreement is the bar: one bad submission should not block the analysis.
+
+    The batch guard is about the batch. Tolerating the odd sequence here is only
+    defensible because `align` refuses to hand it back silently - see the tests below,
+    which is the half that was missing.
+    """
     a = _random_sequence(600, seed=13)
     others = [_mutate(a, sites=20, seed=s) for s in range(14, 24)]
     rotated = a[300:] + a[:300]
     check_comparable([a, *others, rotated])
+    assert odd_prefixes([a, *others, rotated]) == [11]
+
+
+def test_the_odd_sequence_is_reported_individually():
+    a = _random_sequence(600, seed=13)
+    others = [_mutate(a, sites=20, seed=s) for s in range(14, 24)]
+    assert odd_prefixes([a, *others]) == []
+
+
+def _batch_with_one_reverse_complement():
+    a = _random_sequence(600, seed=40)
+    others = [_mutate(a, sites=20, seed=s) for s in range(41, 49)]
+    return [a, *others, reverse_complement(a)]
+
+
+def test_a_reverse_complemented_submission_is_refused_not_aligned():
+    """It passes the prefix guard as a minority of one, then aligns to noise. Every
+    variant called from that row would be an artefact."""
+    sequences = _batch_with_one_reverse_complement()
+    check_comparable(sequences)  # the batch guard lets it through
+
+    with pytest.raises(AlignmentImpossible) as caught:
+        align(sequences)
+    assert "identity to the centre" in str(caught.value)
+
+
+def test_the_refusal_names_the_sequence_and_suggests_the_strand():
+    sequences = _batch_with_one_reverse_complement()
+    names = [f"ACC{i}" for i in range(len(sequences))]
+    with pytest.raises(AlignmentImpossible) as caught:
+        align(sequences, names=names)
+    message = str(caught.value)
+    assert "ACC9" in message
+    assert "reverse complement" in message
+
+
+def test_a_rotated_submission_is_refused_too():
+    a = _random_sequence(600, seed=50)
+    others = [_mutate(a, sites=20, seed=s) for s in range(51, 59)]
+    rotated = a[300:] + a[:300]
+    with pytest.raises(AlignmentImpossible, match="identity to the centre"):
+        align([a, *others, rotated])
+
+
+def test_the_junk_row_can_still_be_aligned_deliberately():
+    """Refusing by default is right; refusing with no way through is not. The caller
+    has now been told which row is junk."""
+    sequences = _batch_with_one_reverse_complement()
+    aligned = align(sequences, min_identity=0.0)
+    assert len({len(row) for row in aligned}) == 1
+    assert low_identity_rows(aligned, choose_centre(sequences))
+
+
+def test_good_sequences_are_unaffected_by_the_identity_floor():
+    a = _random_sequence(600, seed=60)
+    sequences = [a, *[_mutate(a, sites=25, seed=s) for s in range(61, 66)]]
+    assert len(align(sequences)) == 6
+
+
+def test_names_must_match_the_sequences():
+    a = _random_sequence(300, seed=70)
+    with pytest.raises(AlignmentImpossible, match="names for"):
+        align([a, a], names=["only-one"])
 
 
 # --- multiple alignment ---------------------------------------------------

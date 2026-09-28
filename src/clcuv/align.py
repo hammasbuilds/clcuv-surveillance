@@ -54,8 +54,33 @@ class Scoring:
         return self.mismatch
 
 
+COMPLEMENT = str.maketrans("ACGTacgt", "TGCAtgca")
+
+
+def reverse_complement(sequence: str) -> str:
+    return sequence.translate(COMPLEMENT)[::-1]
+
+
+def odd_prefixes(sequences: Sequence[str], *, prefix: int = 24) -> list[int]:
+    """Indices whose start disagrees with the majority start.
+
+    Reported per sequence rather than as one batch verdict. The batch verdict alone was
+    the bug: a single rotated or reverse-complemented submission among fifty good ones
+    left 98% agreement, passed, and was aligned to noise.
+    """
+    if not sequences:
+        return []
+    prefixes = [s[:prefix].upper() for s in sequences]
+    reference = max(set(prefixes), key=prefixes.count)
+    return [i for i, p in enumerate(prefixes) if _identity(p, reference) < 0.7]
+
+
 def check_comparable(
-    sequences: Sequence[str], *, prefix: int = 24, min_agreement: float = 0.8
+    sequences: Sequence[str],
+    *,
+    prefix: int = 24,
+    min_agreement: float = 0.8,
+    names: Sequence[str] | None = None,
 ) -> None:
     """Refuse input this aligner cannot handle.
 
@@ -63,17 +88,22 @@ def check_comparable(
     at any point, and two rotations of the same genome are 100% identical biologically
     while sharing almost no aligned column. A naive alignment of them produces a dense
     field of apparent mutations, every downstream number is wrong, and nothing errors.
+
+    This is the *batch* guard: it refuses a set that is mostly not co-oriented. It
+    deliberately tolerates a minority of odd sequences, so that one bad submission does
+    not block an analysis of fifty good ones - but tolerating is not the same as
+    accepting, and `align()` will not let an odd sequence through silently. See
+    `low_identity_rows`.
     """
     if len(sequences) < 2:
         raise AlignmentImpossible("need at least two sequences")
 
-    prefixes = [s[:prefix].upper() for s in sequences]
-    reference = max(set(prefixes), key=prefixes.count)
-    agreeing = sum(1 for p in prefixes if _identity(p, reference) >= 0.7)
+    odd = odd_prefixes(sequences, prefix=prefix)
+    agreeing = len(sequences) - len(odd)
 
-    if agreeing / len(prefixes) < min_agreement:
+    if agreeing / len(sequences) < min_agreement:
         raise AlignmentImpossible(
-            f"only {agreeing}/{len(prefixes)} sequences share a common start. These may "
+            f"only {agreeing}/{len(sequences)} sequences share a common start. These may "
             "be differently rotated circular genomes or reverse-complemented; align them "
             "with MAFFT or MUSCLE instead"
         )
@@ -85,6 +115,41 @@ def check_comparable(
             f"lengths differ by {spread:.0%} of the median, which exceeds what a banded "
             "aligner can be trusted with; use MAFFT or MUSCLE"
         )
+
+
+def low_identity_rows(
+    aligned: Sequence[str], centre: int, *, min_identity: float = 0.7
+) -> list[tuple[int, float]]:
+    """Aligned rows too unlike the centre to be a real alignment, as (index, identity).
+
+    This is the check that catches what the prefix guard cannot. Two rotations of one
+    genome, or a genome and its reverse complement, align at roughly the rate two random
+    sequences do - about 25% of columns matching outright, and near 50% once the aligner
+    has spent gaps buying agreement. Anything under 70% against the centre is not a
+    poorly-conserved isolate, it is a sequence that should not have been in this
+    alignment, and every variant its row contributes downstream is an artefact.
+    """
+    reference = aligned[centre]
+    out = []
+    for index, row in enumerate(aligned):
+        if index == centre:
+            continue
+        score = _column_identity(row, reference)
+        if score < min_identity:
+            out.append((index, round(score, 4)))
+    return out
+
+
+def _column_identity(a: str, b: str) -> float:
+    """Identity over columns where both rows have a called base."""
+    compared = same = 0
+    for x, y in zip(a, b, strict=False):
+        if x not in "ACGT" or y not in "ACGT":
+            continue
+        compared += 1
+        if x == y:
+            same += 1
+    return same / compared if compared else 0.0
 
 
 def _identity(a: str, b: str) -> float:
@@ -224,15 +289,27 @@ def align(
     band: int = 120,
     centre: int | None = None,
     check: bool = True,
+    names: Sequence[str] | None = None,
+    min_identity: float = 0.7,
 ) -> list[str]:
     """Centre-star multiple alignment. Returns sequences of equal length.
 
     Each sequence is aligned to the centre, then every gap any pairwise alignment
     introduced *into the centre* is propagated to all the others — which is what turns a
     set of independent pairwise alignments into one consistent multiple alignment.
+
+    After merging, every row is compared with the centre and anything below
+    `min_identity` raises, naming the sequence. A rotated or reverse-complemented
+    submission passes the prefix guard whenever it is a small enough minority, and then
+    aligns to noise: this is where it is caught. Pass `min_identity=0.0` to align
+    anyway, having been told which rows are junk.
     """
+    if len(sequences) < 2:
+        raise AlignmentImpossible("need at least two sequences")
+    if names is not None and len(names) != len(sequences):
+        raise AlignmentImpossible(f"got {len(names)} names for {len(sequences)} sequences")
     if check:
-        check_comparable(sequences)
+        check_comparable(sequences, names=names)
 
     sequences = [s.upper() for s in sequences]
     centre = choose_centre(sequences) if centre is None else centre
@@ -282,7 +359,57 @@ def align(
         merged.append("".join(row))
 
     width = max(len(row) for row in merged)
-    return [row.ljust(width, GAP) for row in merged]
+    merged = [row.ljust(width, GAP) for row in merged]
+
+    if min_identity > 0:
+        bad = low_identity_rows(merged, centre, min_identity=min_identity)
+        if bad:
+            raise AlignmentImpossible(
+                _low_identity_message(bad, sequences, centre, names, min_identity)
+            )
+
+    return merged
+
+
+def _low_identity_message(
+    bad: list[tuple[int, float]],
+    sequences: Sequence[str],
+    centre: int,
+    names: Sequence[str] | None,
+    min_identity: float,
+) -> str:
+    """Name the offending sequences, and say whether reverse-complementing would fix it.
+
+    Checking the reverse complement costs one pairwise alignment per bad row and turns
+    "this failed" into "this is backwards", which is the difference between a user
+    giving up and a user fixing their input in one step.
+    """
+
+    def label(index: int) -> str:
+        return names[index] if names else f"sequence {index}"
+
+    lines = []
+    for index, score in bad[:5]:
+        flipped = align_pair(sequences[centre], reverse_complement(sequences[index]))
+        flipped_score = _column_identity(flipped[1], flipped[0])
+        hint = (
+            f"; its reverse complement aligns at {flipped_score:.0%}, so it is probably "
+            "on the opposite strand"
+            if flipped_score > score + 0.15
+            else "; it may be a differently rotated circular genome, or a different species"
+        )
+        lines.append(f"  {label(index)}: {score:.0%} identity to the centre{hint}")
+
+    more = f"\n  ... and {len(bad) - 5} more" if len(bad) > 5 else ""
+    return (
+        f"{len(bad)} of {len(sequences)} sequences aligned at less than "
+        f"{min_identity:.0%} identity to the centre ({label(centre)}), which is close "
+        "to what two unrelated sequences score. "
+        "Every variant called from those rows would be an artefact:\n"
+        + "\n".join(lines)
+        + more
+        + "\nFix or drop them, or pass min_identity=0.0 to align them anyway."
+    )
 
 
 def alignment_report(aligned: Sequence[str]) -> dict:

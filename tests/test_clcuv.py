@@ -42,6 +42,7 @@ from clcuv.phylo import (
     jukes_cantor,
     neighbour_joining,
     p_distance,
+    quote_newick,
     upgma,
 )
 
@@ -217,6 +218,62 @@ class TestTreeBuilding:
     def test_newick_output_is_produced(self):
         newick = neighbour_joining(self.NAMES, self.MATRIX).newick()
         assert newick.startswith("(") and "A" in newick
+
+    def test_saturated_distances_are_refused_with_the_pair_named(self):
+        """`jukes_cantor` returns inf at p >= 0.75 on purpose, and the tree builders
+        used to turn that into `TypeError: cannot unpack non-iterable NoneType`."""
+        names = ["ingroup", "outgroup"]
+        with pytest.raises(PhyloError, match="saturated"):
+            neighbour_joining(
+                [*names, "third"], [[0, math.inf, 0.1], [math.inf, 0, 0.2], [0.1, 0.2, 0]]
+            )
+        with pytest.raises(PhyloError, match="outgroup"):
+            upgma(names, [[0, math.inf], [math.inf, 0]])
+
+    def test_the_documented_saturation_case_end_to_end(self):
+        """The README advertises `inf` at p >= 0.75, so four random sequences - which
+        saturate against each other - must give an explanation, not a crash."""
+        rng = random.Random(99)
+        sequences = ["".join(rng.choice("ACGT") for _ in range(300)) for _ in range(4)]
+        names, matrix = distance_matrix(sequences)
+        assert any(math.isinf(v) for row in matrix for v in row)
+        with pytest.raises(PhyloError, match="too divergent"):
+            neighbour_joining(names, matrix)
+
+    def test_uncorrected_distances_still_build_a_tree(self):
+        """The error tells the user to pass correct=False, so that has to work."""
+        rng = random.Random(99)
+        sequences = ["".join(rng.choice("ACGT") for _ in range(300)) for _ in range(4)]
+        names, matrix = distance_matrix(sequences, correct=False)
+        assert len(neighbour_joining(names, matrix).leaves()) == 4
+
+    @pytest.mark.parametrize(
+        ("label", "expected"),
+        [
+            ("MW183409.1", "MW183409.1"),
+            ("MW183409.1 Punjab (2019)", "'MW183409.1 Punjab (2019)'"),
+            ("ON312781.1:Sindh", "'ON312781.1:Sindh'"),
+            ("MW183409.1 | Punjab | 2019", "'MW183409.1 | Punjab | 2019'"),
+            ("O'Brien isolate", "'O''Brien isolate'"),
+        ],
+    )
+    def test_newick_labels_are_quoted_when_they_have_to_be(self, label, expected):
+        assert quote_newick(label) == expected
+
+    def test_real_export_labels_produce_parseable_newick(self):
+        """`export_alignment.py` writes exactly these labels, and unquoted they turn
+        one taxon into several that any tree viewer misreads."""
+        names = ["MW183409.1 | Punjab | 2019", "ON312781.1 | Sindh | 2021"]
+        newick = neighbour_joining(names, [[0, 0.04], [0.04, 0]]).newick()
+        assert newick.count("'") == 4
+        # Outside the quoted labels, the only separator left is the one comma Newick
+        # uses between the two children.
+        assert (
+            newick.replace("'MW183409.1 | Punjab | 2019'", "")
+            .replace("'ON312781.1 | Sindh | 2021'", "")
+            .count(",")
+            == 1
+        )
 
 
 class TestAtlas:
