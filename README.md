@@ -80,12 +80,14 @@ A variant common in Sindh and absent from Punjab then **appears to emerge** betw
 and 2021, with a perfectly valid z-statistic, having done nothing at all. The frequency
 genuinely rose. The population being sampled is not the same population.
 
-So the rise is re-tested inside each location separately, comparing like with like.
-On the real data this removed 40 of 92.
+So the rise is re-tested inside each location separately, comparing like with like -
+after merging the spellings of one place first (`Pakistan: Punjab`, `Pakistan: Punjab
+province`, `Pakistan: Punjab,Bahawalpur` and three more are one stratum, not six; see
+`clcuv.geo`). On the real data this removed 16 of 92.
 
 ### Control 3 — how many independent genomes is that? (`collapse_clonal`)
 
-The remaining 52 are "confirmed" somewhere, most of them Punjab, at z > 3. Then:
+The remaining 76 are "confirmed" somewhere, most of them Punjab, at z > 3. Then:
 
 ```
 2019  Pakistan: Punjab   8 sequences ->  3 haplotypes   (x2.67)
@@ -99,11 +101,11 @@ observations. There were two. Collapsing each `(year, location)` to one sequence
 haplotype first:
 
 ```
-all sequences        n=229  pooled=92  stratified=52
-one per haplotype    n=191  pooled= 0   stratified=0
+all sequences        n=228  pooled=92  stratified=76
+one per haplotype    n=184  pooled= 0   stratified=0
 ```
 
-**Fifty-two to zero.** This is the same bug as a research agent counting one wire story
+**Seventy-six to zero.** This is the same bug as a research agent counting one wire story
 republished by twelve outlets as twelve corroborating sources: *the unit of replication
 is not the row*. Identical sequences in **different** places or years are kept — that is
 spread, not duplication.
@@ -115,10 +117,15 @@ uv run python scripts/real_data.py analyse
 ```
 
 The honest output on this dataset is that **no variant can be shown to be emerging**.
-This query returns 254 genomes, which deduplicate to 191 haplotypes across 96 strata -
-and after that, not enough independent ones from any single place and pair of years to
-support the claim. A surveillance tool that says so is more useful than one that
-reports 52.
+This query returns 254 genomes, which deduplicate to 184 haplotypes across 67 strata once
+location spellings are merged - and after that, not enough independent genomes from any
+single place and pair of years to support the claim. A surveillance tool that says so is
+more useful than one that reports 76.
+
+The count that survives stratification moves with the corpus and with `min_samples` - the
+CLI's `analyse` command prints the sweep across a range of thresholds alongside the
+headline number for exactly this reason. What does not move is the ending: every rerun
+of this dataset has collapsed to zero independent genomes.
 
 ## 2. Is something selecting for it?
 
@@ -238,18 +245,20 @@ than the evidence supports. 250 records, 210 haplotypes.
 ![output](docs/images/output.png)
 
 *Eight genomes from Punjab in 2021 are one haplotype — the same infection sequenced eight
-times. Counting them as eight independent observations is what produces nine "emerging"
-variants. Counting them once produces none.*
+times. Counting them as eight independent observations is part of what makes 76
+"emerging" variants survive a pooled test and a stratified one. Counting each clonal
+group once produces none.*
 
-*The zero is the result. Nine variants that looked real under a pooled test, and a
-stratified test, had no independent support at all, and the dataset cannot answer the
-question it was asked.*
+*The zero is the result. Seventy-six variants that looked real under both tests had no
+independent support at all, and the dataset cannot answer the question it was asked.
+(The screenshots above are from an earlier, smaller run of this same pipeline and predate
+the location-normalisation fix; the numbers in the body text above are current.)*
 
 ---
 
 ## Tests
 
-**101 tests. No dependencies, no sequence downloads, no BLAST.**
+**203 tests. No dependencies, no sequence downloads, no BLAST.**
 
 Phylogenetics and selection are exact — an additive matrix has one correct tree, and
 dN/dS on synonymous-only changes is zero — so those are asserted rather than
@@ -268,6 +277,9 @@ approximated.
 | **Alignment** | bases always recoverable, deletions gapped, insertions get separate columns, **rotated circular genomes refused**, length mismatch refused, one odd sequence tolerated |
 | **Clonality** | clonal batch collapses to one, distinct sequences survive, identical sequences in different places/years kept, ambiguity skipped, **the false positive reproduced then removed**, a rise with real support kept |
 | **Stratification** | the geographic confounder reproduced, then discarded; a within-location rise confirmed; one-period locations confirm nothing |
+| **Geo normalisation** | spelling/casing/district variants merge to one stratum, a designed reference mismatch is not reported as a mutation |
+| **I/O** | FASTA parse errors (duplicate name, non-nucleotide, gaps where unaligned expected), GenBank date formats, metadata column aliases, round-trip write |
+| **CLI** | end-to-end on a user's own FASTA + metadata, JSON output, missing/empty file and bad-metadata errors are messages, not tracebacks |
 
 ## Limits
 
@@ -309,9 +321,22 @@ MIT
 git clone https://github.com/hammasbuilds/clcuv-surveillance
 cd clcuv-surveillance
 
-pip install -e .         # zero dependencies to resolve
-pytest -q                # 101 tests, no sequence download
+pip install -e ".[dev]"  # zero runtime dependencies; pytest/ruff for development
+pytest -q                # 203 tests, no sequence download
 ```
+
+### On your own genomes
+
+```bash
+clcuv analyse --fasta isolates.fasta --metadata isolates.csv
+clcuv analyse --fasta isolates.fasta --metadata isolates.csv --json
+clcuv export  --fasta isolates.fasta --metadata isolates.csv --out deduped.fasta
+```
+
+`isolates.csv` needs a name column (`name`, `accession`, `id`, ...) plus a period
+(`period`, `year`, `date`, ...) and a location (`location`, `country`, `region`, ...) for
+every sequence — see `clcuv analyse --help`. `analyse` prints the emergence result and the
+`min_samples` sweep around it together, because a count from one setting is not a finding.
 
 ### On real genomes, in one command
 
@@ -325,16 +350,16 @@ aligns them, builds the atlas and runs all three controls. Standard library only
 no BLAST, no MAFFT, no API key. Abridged output:
 
 ```
-254 records parsed  |  250 are Cotton leaf curl Multan virus, 229 carry a date
+254 records parsed  |  250 are Cotton leaf curl Multan virus, 228 carry a plausible date
 aligning ... 109s   |  width 3162, 30.4% invariant columns, 0 all-gap columns
-838 variants above 1% against the consensus
+837 variants above 1% against the consensus
 
 2019  Pakistan: Punjab    8 seqs ->  3 haplotypes  (x2.67)
 2021  Pakistan: Punjab    8 seqs ->  1 haplotype   (x8.0)    <- too clonal to test
 2021  Pakistan: Sindh     5 seqs ->  1 haplotype   (x5.0)    <- too clonal to test
 
-all sequences        n=229  pooled=92  stratified=52
-one per haplotype    n=191  pooled= 0   stratified=0
+all sequences        n=228  pooled=92  stratified=76
+one per haplotype    n=184  pooled= 0   stratified=0
 ```
 
 ```python
@@ -384,8 +409,8 @@ the ratio is undefined, and returning `inf` turns *"we cannot tell"* into *"stro
 positive selection"* — the wrong direction to be wrong in for an alerting system.
 *Fixed* by returning `None` with an explicit "undetermined" interpretation.
 
-**Fifty-two emerging variants, and none of them independent.** With the noise and
-geography controls in place, the real GenBank set still reported 52 variants rising at
+**Seventy-six emerging variants, and none of them independent.** With the noise and
+geography controls in place, the real GenBank set still reported 76 variants rising at
 z > 3, most of them in Punjab. Every number was computed correctly. Then:
 
 ```
@@ -395,7 +420,16 @@ z > 3, most of them in Punjab. Every number was computed correctly. Then:
 Each year's Punjab sample is a single submission batch, and the 2021 batch is clonal.
 The z-test was told there were sixteen independent observations; there were two. *Fixed*
 with `collapse_clonal()`, which reduces each `(year, location)` to one sequence per
-haplotype before any test runs — and the 52 became **zero**.
+haplotype before any test runs — and the 76 became **zero**.
+
+**The location-normalisation fix lived in the library and not in the script that
+demonstrates it.** `clcuv.geo` learned to merge `Pakistan: Punjab province` and
+`Pakistan: Punjab,Bahawalpur` into one stratum, but `scripts/real_data.py` - the
+command this README tells a reader to run - built isolates from the raw `/country`
+string and never called it, so the number it printed was the pre-fix number even after
+the fix shipped. *Fixed* by having the script call `normalise_isolates()` too, the same
+way the CLI's `analyse` command does; the stratified count moved from 52 to 76 once the
+comparison actually ran on merged locations.
 
 This is worth stating plainly because it is the same failure as a research agent treating
 one wire story republished by twelve outlets as twelve corroborating sources: **the unit

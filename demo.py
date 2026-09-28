@@ -60,7 +60,7 @@ def main() -> int:
     print("on pooled counts are supported by repeated sampling of the same", flush=True)
     print("outbreak, not by repeated observation of the same mutation.", flush=True)
     print(flush=True)
-    print("Full write-up: docs/", flush=True)
+    print("Full write-up: README.md", flush=True)
     return 0
 
 
