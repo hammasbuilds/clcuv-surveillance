@@ -9,9 +9,12 @@ it depends on a network service whose behaviour is not ours to test.
 
 Only the standard library is used, so it runs in a bare checkout.
 
-Run `analyse` to see the finding this project's last two controls exist for: eleven
-variants look like they are emerging, nine of them survive stratification by region,
-and **none of them survive being asked how many independent genomes are behind them**.
+Run `analyse` to see the finding this project's last two controls exist for: a double
+digit number of variants look like they are emerging, most of them survive stratification
+by region once mis-spelled and mis-cased location strings are merged into one, and
+**none of them survive being asked how many independent genomes are behind them**. The
+exact counts are printed, not written down here, because they move as the corpus grows -
+an earlier version of this paragraph said "nine" after the corpus had already made it "52".
 """
 
 from __future__ import annotations
@@ -29,6 +32,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from clcuv.align import align, alignment_report  # noqa: E402
 from clcuv.atlas import Isolate, build_atlas, emerging_variants  # noqa: E402
+from clcuv.cli import MAX_YEAR, MIN_YEAR  # noqa: E402
+from clcuv.geo import normalise_isolates, resolved_strata  # noqa: E402
 from clcuv.haplotype import collapse_clonal, effective_sample_sizes  # noqa: E402
 
 EUTILS = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
@@ -177,9 +182,16 @@ def analyse() -> None:
             host=r["host"],
         )
         for r, sequence in zip(muv, aligned, strict=True)
-        if year_of(r["date"]) and r["country"]
+        if year_of(r["date"]) and r["country"] and MIN_YEAR <= int(year_of(r["date"])) <= MAX_YEAR
     ]
     print(f"\n{len(isolates)} have both a year and a place, and can be surveilled")
+
+    # Raw `/country` strings ("Pakistan: Punjab", "Pakistan: Punjab province", "Pakistan:
+    # Punjab,Bahawalpur") are spellings of the same stratum, not different ones - see
+    # clcuv.geo. Stratifying on the raw string splits one province's evidence across
+    # several rows and undercounts every one of them.
+    isolates, mapping = normalise_isolates(isolates)
+    eligible = resolved_strata(mapping)
 
     print("\n--- how many independent genomes are actually here? ---")
     for (period, location), size in effective_sample_sizes(isolates).items():
@@ -200,7 +212,9 @@ def analyse() -> None:
     for name, pool in (("all sequences", isolates), ("one per haplotype", collapsed)):
         variants = build_atlas(pool, reference)
         pooled = emerging_variants(variants, min_samples=8)
-        stratified = emerging_variants(variants, min_samples=8, stratify=True)
+        stratified = emerging_variants(
+            variants, min_samples=8, stratify=True, eligible_locations=eligible
+        )
         counts[name] = len(stratified)
         print(f"  {name:<20} n={len(pool):<3} pooled={len(pooled):<3} stratified={len(stratified)}")
 
