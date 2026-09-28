@@ -250,10 +250,10 @@ class TestAtlas:
     def test_singletons_are_dropped(self):
         """A variant seen once in a few hundred genomes is more likely a sequencing
         error than a lineage."""
-        isolates = [Isolate(f"i{i}", REF, period="p") for i in range(200)]
+        isolates = [Isolate(f"i{i}", REF, period="2024") for i in range(200)]
         odd = list(REF)
         odd[5] = "T" if REF[5] != "T" else "A"
-        isolates.append(Isolate("odd", "".join(odd), period="p"))
+        isolates.append(Isolate("odd", "".join(odd), period="2024"))
         assert build_atlas(isolates, REF, min_frequency=0.01) == []
 
     def test_a_rising_variant_is_reported_as_emerging(self):

@@ -17,9 +17,27 @@ the derivative rather than the level.
 from __future__ import annotations
 
 import math
+import re
 from collections import Counter, defaultdict
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass, field
+
+# Periods are ordered by sorting the string, so only forms that sort chronologically
+# are accepted. `May-2025` and `Jan-2026` do not: sorted() puts January 2026 first,
+# `emerging_variants` then reads the trend backwards, and nothing errors. Rejecting the
+# format is the only version of this that cannot fail silently.
+PERIOD_PATTERN = re.compile(r"^\d{4}(-(0[1-9]|1[0-2])(-\d{2})?|-Q[1-4])?$")
+PERIOD_FORMS = "YYYY, YYYY-MM, YYYY-MM-DD or YYYY-Qn"
+
+
+def check_period(period: str) -> None:
+    """Raise unless `period` sorts chronologically as a string."""
+    if period and not PERIOD_PATTERN.match(period):
+        raise ValueError(
+            f"period {period!r} is not a sortable form. Periods are ordered by sorting "
+            f"the string, so use {PERIOD_FORMS} - a form like 'May-2025' sorts before "
+            "'Jan-2026' and would reverse the trend silently. Pass period='' for unknown."
+        )
 
 
 @dataclass(frozen=True)
@@ -28,11 +46,14 @@ class Isolate:
 
     name: str
     sequence: str
-    # Collection period - a season, month or year. Ordered lexically, so use a sortable
-    # form such as "2026-Q1".
+    # Collection period - a season, month or year. Ordered lexically, so the format is
+    # checked: see `check_period`.
     period: str = ""
     location: str = ""
     host: str = ""
+
+    def __post_init__(self) -> None:
+        check_period(self.period)
 
 
 @dataclass
@@ -174,6 +195,10 @@ class Emerging:
     # Locations where the rise holds within that location alone. Empty when the trend
     # only exists in the pooled data, which usually means it is a sampling artefact.
     confirmed_in: list[str] = field(default_factory=list)
+    # How many periods had enough sequences to be usable. Two means the comparison rests
+    # on the only two periods available, and one genome moving across `min_samples`
+    # would have changed which two those are.
+    periods_used: int = 2
 
     @property
     def stratified(self) -> bool:
@@ -187,9 +212,31 @@ class Emerging:
             "change": round(self.change, 4),
             "fold": self.fold,
             "z": round(self.z, 3),
+            "periods_used": self.periods_used,
             "confirmed_in": self.confirmed_in,
             "locations": dict(self.variant.locations.most_common(5)),
         }
+
+
+COMPARISONS = ("extremes", "adjacent")
+
+
+def _candidate_pairs(usable: list, compare: str) -> list[tuple]:
+    """Which (earlier, later) period pairs a rise may be claimed between.
+
+    `extremes` compares the first and last usable period. It is the natural reading of
+    "is this rising", and it has a failure mode worth naming: the endpoints are chosen
+    by `min_samples`, so one genome crossing that threshold swaps an endpoint and can
+    change the answer. `adjacent` compares consecutive usable periods instead, which
+    does not depend on which period happens to be the earliest, and fires if any single
+    step qualifies. Neither is the true one. Running both is how you find out whether a
+    result is a finding or an artefact of the setting - see `emergence_sensitivity`.
+    """
+    if compare == "extremes":
+        return [(usable[0], usable[-1])] if len(usable) >= 2 else []
+    if compare == "adjacent":
+        return list(zip(usable, usable[1:], strict=False))
+    raise ValueError(f"compare must be one of {COMPARISONS}, not {compare!r}")
 
 
 def rises_within_locations(
@@ -198,44 +245,46 @@ def rises_within_locations(
     min_change: float = 0.10,
     min_samples: int = 8,
     min_z: float = 1.96,
+    compare: str = "extremes",
+    eligible_locations: Collection[str] | None = None,
 ) -> list[str]:
     """Locations where this variant rises *within that location's own samples*.
 
     The confounder this exists for, found on real GenBank data rather than imagined:
+    the set of places sampled changes between periods, so a variant common in one
+    province and absent from another appears to "emerge" when the sampling programme
+    moves, with a perfectly valid z-statistic, having done nothing at all. The frequency
+    genuinely rose; the population being sampled is simply not the same population.
 
-        2019 submissions came from Punjab only
-        2021 submissions came from Punjab, Sindh and India
-
-    A variant common in Sindh and absent from Punjab then appears to "emerge" between
-    2019 and 2021, with a perfectly valid z-statistic, having done nothing at all. The
-    frequency genuinely rose; the population being sampled is simply not the same
-    population.
-
-    On a real CLCuMuV set, **ten of eleven** variants flagged by the pooled test were
-    explained by sample geography. Comparing like with like - one location, two periods -
-    is what separates a lineage spreading from a collection shifting.
+    `eligible_locations` restricts which strata may confirm. This matters because a
+    location string is not automatically a location: a record filed as `Pakistan` with
+    no province mixes provinces together, so confirming "within Pakistan" reintroduces
+    exactly the confounder being controlled for. `clcuv.geo.resolved_strata` supplies
+    the set that names a first-level division. `None` means every stratum may confirm,
+    which is only safe when the locations are already known to be comparable.
     """
     confirmed: list[str] = []
 
     for location in variant.strata():
+        if eligible_locations is not None and location not in eligible_locations:
+            continue
+
         usable = [
             (period, carrying, sampled)
             for period, carrying, sampled in variant.trajectory_within(location)
             if sampled >= min_samples
         ]
-        if len(usable) < 2:
-            continue
 
-        (first_period, first_count, first_total) = usable[0]
-        (last_period, last_count, last_total) = usable[-1]
-
-        change = last_count / last_total - first_count / first_total
-        if change < min_change:
-            continue
-        if two_proportion_z(first_count, first_total, last_count, last_total) < min_z:
-            continue
-
-        confirmed.append(location)
+        for (_, first_count, first_total), (_, last_count, last_total) in _candidate_pairs(
+            usable, compare
+        ):
+            change = last_count / last_total - first_count / first_total
+            if change < min_change:
+                continue
+            if two_proportion_z(first_count, first_total, last_count, last_total) < min_z:
+                continue
+            confirmed.append(location)
+            break
 
     return confirmed
 
@@ -247,6 +296,8 @@ def emerging_variants(
     min_samples: int = 10,
     min_z: float = 1.96,
     stratify: bool = False,
+    compare: str = "extremes",
+    eligible_locations: Collection[str] | None = None,
 ) -> list[Emerging]:
     """Variants whose frequency is rising, and rising by more than chance.
 
@@ -260,41 +311,39 @@ def emerging_variants(
     was a real false positive here, where a variant sitting at a constant 40% was
     reported as rising because two seasons of 100 genomes happened to land at 33% and
     45%. Effect size alone is not evidence.
+
+    Every one of those thresholds is a judgement call, and on a corpus this size the
+    answer moves when they move. Do not read one call of this function as the result:
+    run `emergence_sensitivity` and read the shape of the sweep.
     """
     out: list[Emerging] = []
 
     for variant in variants:
         usable = [(period, freq, n) for period, freq, n in variant.trajectory() if n >= min_samples]
-        if len(usable) < 2:
-            continue
 
-        (first_period, first_freq, first_n) = usable[0]
-        (last_period, last_freq, last_n) = usable[-1]
-
-        change = last_freq - first_freq
-        if change < min_change:
-            continue
-
-        z = two_proportion_z(
-            variant.counts_by_period.get(first_period, 0),
-            first_n,
-            variant.counts_by_period.get(last_period, 0),
+        best: Emerging | None = None
+        for (first_period, first_freq, first_n), (
+            last_period,
+            last_freq,
             last_n,
-        )
-        if z < min_z:
-            continue
+        ) in _candidate_pairs(usable, compare):
+            change = last_freq - first_freq
+            if change < min_change:
+                continue
 
-        confirmed = rises_within_locations(
-            variant, min_change=min_change, min_samples=min_samples, min_z=min_z
-        )
-        # With `stratify`, a rise that only exists in the pooled data is discarded. The
-        # pooled test is not wrong - the frequency really did rise - but it cannot tell a
-        # lineage spreading from a sampling programme moving to a different province.
-        if stratify and not confirmed:
-            continue
+            z = two_proportion_z(
+                variant.counts_by_period.get(first_period, 0),
+                first_n,
+                variant.counts_by_period.get(last_period, 0),
+                last_n,
+            )
+            if z < min_z:
+                continue
 
-        out.append(
-            Emerging(
+            if best is not None and change <= best.change:
+                continue
+
+            best = Emerging(
                 variant=variant,
                 first_period=first_period,
                 last_period=last_period,
@@ -305,13 +354,104 @@ def emerging_variants(
                 # large number, turns "newly detected" into "exploding" — a different claim.
                 fold=round(last_freq / first_freq, 3) if first_freq > 0 else None,
                 z=round(z, 4),
-                confirmed_in=confirmed,
+                periods_used=len(usable),
             )
+
+        if best is None:
+            continue
+
+        best.confirmed_in = rises_within_locations(
+            variant,
+            min_change=min_change,
+            min_samples=min_samples,
+            min_z=min_z,
+            compare=compare,
+            eligible_locations=eligible_locations,
         )
+        # With `stratify`, a rise that only exists in the pooled data is discarded. The
+        # pooled test is not wrong - the frequency really did rise - but it cannot tell a
+        # lineage spreading from a sampling programme moving to a different province.
+        if stratify and not best.confirmed_in:
+            continue
+
+        out.append(best)
 
     # Variants confirmed within a location first: those are the ones that survived the
     # question "compared with what?"
     return sorted(out, key=lambda e: (not e.stratified, -e.change))
+
+
+def group_linked(emerging: Sequence[Emerging]) -> list[list[Emerging]]:
+    """Group variants that rise and fall together, because they are one event.
+
+    Mutations on the same lineage travel together. If a lineage carrying seventy-six
+    substitutions spreads, all seventy-six rise in lockstep, and a report saying
+    "seventy-six variants are emerging" has described one event seventy-six times -
+    the same error as counting one clonal batch as eight observations, one level up.
+
+    Variants are grouped when their per-period carrier counts are identical, which is
+    exact linkage over the periods observed rather than a correlation threshold. The
+    number worth reporting is `len(group_linked(found))` beside `len(found)`: on this
+    corpus those are 3 and 76.
+    """
+    groups: dict[tuple, list[Emerging]] = {}
+    for item in emerging:
+        signature = tuple(sorted(item.variant.counts_by_period.items()))
+        groups.setdefault(signature, []).append(item)
+    return sorted(groups.values(), key=lambda g: (-len(g), g[0].variant.position))
+
+
+def emergence_sensitivity(
+    variants: Sequence[Variant],
+    *,
+    min_samples_values: Sequence[int] = (5, 6, 7, 8, 9, 10),
+    min_change: float = 0.10,
+    min_z: float = 1.96,
+    compare: str = "extremes",
+    eligible_locations: Collection[str] | None = None,
+) -> list[dict]:
+    """How many variants survive each control, across a range of `min_samples`.
+
+    `min_samples` is the least defensible number in this module. It is not estimated
+    from anything; it is a line drawn to keep periods with too few genomes out of the
+    test, and where it is drawn decides which periods become the endpoints of the
+    comparison. On a corpus where whole years hold eight or nine genomes, moving it by
+    one moves the answer.
+
+    A single count reported without this sweep is not a finding, it is a setting. The
+    sweep is cheap, it is the first thing a reviewer asks for, and if the count is
+    stable across it that is worth far more than the count itself.
+    """
+    rows = []
+    for min_samples in min_samples_values:
+        pooled = emerging_variants(
+            variants,
+            min_change=min_change,
+            min_samples=min_samples,
+            min_z=min_z,
+            compare=compare,
+        )
+        stratified = [
+            e
+            for e in pooled
+            if rises_within_locations(
+                e.variant,
+                min_change=min_change,
+                min_samples=min_samples,
+                min_z=min_z,
+                compare=compare,
+                eligible_locations=eligible_locations,
+            )
+        ]
+        rows.append(
+            {
+                "min_samples": min_samples,
+                "compare": compare,
+                "pooled": len(pooled),
+                "stratified": len(stratified),
+            }
+        )
+    return rows
 
 
 def geographic_spread(variant: Variant) -> dict:
