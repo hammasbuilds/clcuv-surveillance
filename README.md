@@ -2,12 +2,11 @@
 <p align="center"><i>Which variant is winning, why, and whether our diagnostics can still see it</i></p>
 
 <p align="center">
-  <a href="#the-problem">The problem</a> &middot;
+  <a href="#what-it-does">What it does</a> &middot;
   <a href="#1-which-variant-is-rising--and-is-that-real">Which variant is rising</a> &middot;
   <a href="#2-is-something-selecting-for-it">Selection pressure</a> &middot;
   <a href="#3-how-are-the-strains-related">Phylogeny</a> &middot;
-  <a href="#4-is-this-something-we-have-never-seen">Novel strains</a> &middot;
-  <a href="#problems-hit-while-building-this">Problems hit</a>
+  <a href="#4-is-this-something-we-have-never-seen">Novel strains</a> 
 </p>
 
 <p align="center">
@@ -20,7 +19,7 @@
 
 ---
 
-## The problem
+## What it does
 
 ```mermaid
 flowchart TD
@@ -383,70 +382,3 @@ clf.classify(new_genome)    # strain=None means "I have not seen this before"
 
 Sequences must already be aligned. CLCuV genomes are public in NCBI Virus; none ship
 with this repo.
-
-## Problems hit while building this
-
-**The emerging-variant detector fired on sampling noise.** A variant sitting at a
-constant 40% was reported as *rising*, because two seasons of 100 genomes happened to
-land at 33% and 45%. A twelve-point jump looks like a lineage winning and is, at that
-sample size, ordinary wobble.
-
-A surveillance system that cries wolf gets ignored by the third false alarm — so effect
-size alone is not evidence. *Fixed* by requiring a two-proportion z-test alongside the
-threshold, and the noise case is now a test that also asserts the old behaviour *would*
-have fired.
-
-**UPGMA is in the repo specifically to be wrong.** It assumes a molecular clock, and the
-lineage under host-resistance pressure evolves fastest — precisely the lineage
-surveillance cares about. On an additive matrix where the true tree is known, neighbour-
-joining recovers the exact topology **and branch lengths** while UPGMA misplaces the
-fast-evolving taxon, confidently. Both are tests, and UPGMA is also tested on an
-ultrametric matrix, because it is a method with an assumption rather than a broken
-method.
-
-**dN/dS reporting infinity would have been an alarm.** With no synonymous differences
-the ratio is undefined, and returning `inf` turns *"we cannot tell"* into *"strong
-positive selection"* — the wrong direction to be wrong in for an alerting system.
-*Fixed* by returning `None` with an explicit "undetermined" interpretation.
-
-**Seventy-six emerging variants, and none of them independent.** With the noise and
-geography controls in place, the real GenBank set still reported 76 variants rising at
-z > 3, most of them in Punjab. Every number was computed correctly. Then:
-
-```
-2021  Pakistan: Punjab   8 sequences -> 1 haplotype   (28 of 28 pairs 100% identical)
-```
-
-Each year's Punjab sample is a single submission batch, and the 2021 batch is clonal.
-The z-test was told there were sixteen independent observations; there were two. *Fixed*
-with `collapse_clonal()`, which reduces each `(year, location)` to one sequence per
-haplotype before any test runs — and the 76 became **zero**.
-
-**The location-normalisation fix lived in the library and not in the script that
-demonstrates it.** `clcuv.geo` learned to merge `Pakistan: Punjab province` and
-`Pakistan: Punjab,Bahawalpur` into one stratum, but `scripts/real_data.py` - the
-command this README tells a reader to run - built isolates from the raw `/country`
-string and never called it, so the number it printed was the pre-fix number even after
-the fix shipped. *Fixed* by having the script call `normalise_isolates()` too, the same
-way the CLI's `analyse` command does; the stratified count moved from 52 to 76 once the
-comparison actually ran on merged locations.
-
-This is worth stating plainly because it is the same failure as a research agent treating
-one wire story republished by twelve outlets as twelve corroborating sources: **the unit
-of replication is not the row**, and no amount of correct arithmetic downstream repairs
-getting that wrong. The test file reproduces the false positive first and only then shows
-the control removing it, because a fix demonstrated on data where nothing was wrong has
-not been demonstrated.
-
-**The date parser split one year into two.** GenBank `collection_date` has no single
-format — `2019`, `May-2019`, `01-May-2019` and `2015-01` all appear in these records.
-Taking the last four characters yields `5-01` for the fourth, which became its own
-surveillance period holding one genome. Small, silent, and it would have shifted every
-denominator. *Fixed* by extracting the first four-digit year with a regex.
-
-**Writing an aligner was avoidable and doing it anyway was right.** "Sequences must
-arrive aligned" is a defensible boundary and MAFFT is better than anything here. It also
-meant the package could not touch a raw FASTA from NCBI without another install, which
-in practice means the analysis does not get run. `align.py` is deliberately narrow and
-`check_comparable()` refuses what it cannot do — a rotated circular genome aligned
-naively produces a dense field of mutations that are all artefacts, and nothing errors.
