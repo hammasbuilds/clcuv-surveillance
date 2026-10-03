@@ -30,7 +30,7 @@ co-oriented. Use a real aligner for those; that is what `check_comparable` is te
 from __future__ import annotations
 
 import statistics
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 GAP = "-"
@@ -175,85 +175,141 @@ def align_pair(
     if not n or not m:
         return (a + GAP * m, GAP * n + b)
 
+    if a == b:
+        # Identical sequences: the all-match diagonal scores 2 per column and any
+        # alternative spends two gaps (-10) to buy back at most one match, so the
+        # diagonal is the unique optimum and the loop below would rediscover it.
+        # Begomovirus corpora are full of clonal duplicates, so this is most of the
+        # saving on real data.
+        return a, b
+
     # Widen the band to cover the length difference plus the requested slack.
     band = max(band, abs(n - m) + 16)
     drift = (m - n) / n if n else 0.0
-    negative_infinity = float("-inf")
 
-    # One row at a time, keeping the traceback for the whole matrix.
-    previous = {0: 0.0}
-    traceback: list[dict[int, str]] = [{}]
+    # Scores are integers, so the DP runs in exact integer arithmetic and this sentinel
+    # is unreachable as a real cell value: it marks a cell the band never filled.
+    absent = -(1 << 60)
+    gap_score = scoring.gap
+    # One substitution-score row per distinct base in `a`, so the per-cell cost is a
+    # list index rather than a method call.
+    alphabet = sorted(set(b))
+    tables = {base: [scoring.pair(base, other) for other in alphabet] for base in set(a)}
+    codes = {other: index for index, other in enumerate(alphabet)}
+    b_codes = [codes[character] for character in b]
+
+    # One row at a time, keeping the traceback for the whole matrix. Each row is a
+    # dense list over its own band window plus the window's left edge.
+    previous: list[int] = [0]
+    previous_low = 0
+    previous_high = 0
+    traceback: list[tuple[int, bytearray]] = [(0, bytearray())]
+    DIAGONAL, UP, LEFT = 1, 2, 3
 
     for i in range(1, n + 1):
         centre = int(i * (1 + drift))
         low = max(0, centre - band)
         high = min(m, centre + band)
-
-        current: dict[int, float] = {}
-        row_back: dict[int, str] = {}
-
-        for j in range(low, high + 1):
-            if i == 0 and j == 0:
-                current[j] = 0.0
-                continue
-
-            best = negative_infinity
-            move = ""
-
-            diagonal = previous.get(j - 1)
-            if diagonal is not None and j >= 1:
-                score = diagonal + scoring.pair(a[i - 1], b[j - 1])
-                if score > best:
-                    best, move = score, "D"
-
-            up = previous.get(j)
-            if up is not None:
-                score = up + scoring.gap
-                if score > best:
-                    best, move = score, "U"
-
-            left = current.get(j - 1)
-            if left is not None:
-                score = left + scoring.gap
-                if score > best:
-                    best, move = score, "L"
-
-            if move:
-                current[j] = best
-                row_back[j] = move
-
-        if not current:
+        if high < low:
             raise AlignmentImpossible(
                 f"band of {band} was too narrow at row {i}; widen it or use a real aligner"
             )
 
-        traceback.append(row_back)
-        previous = current
+        width = high - low + 1
+        substitution = tables[a[i - 1]]
+
+        # The two predecessors that live in the previous row are read in bulk: the
+        # window overlap is a slice, so only the cells the previous band actually
+        # covered are anything but `absent`. What is left for the per-cell loop is the
+        # gap-to-the-left chain, which is sequential and cannot be lifted out of it.
+        up_candidates = [absent] * width
+        start = max(low, previous_low)
+        end = min(high, previous_high)
+        if start <= end:
+            up_candidates[start - low : end - low + 1] = [
+                absent if value == absent else value + gap_score
+                for value in previous[start - previous_low : end - previous_low + 1]
+            ]
+
+        diagonal_candidates = [absent] * width
+        start = max(low, previous_low + 1, 1)
+        end = min(high, previous_high + 1)
+        if start <= end:
+            diagonal_candidates[start - low : end - low + 1] = [
+                absent if value == absent else value + substitution[code]
+                for value, code in zip(
+                    previous[start - 1 - previous_low : end - previous_low],
+                    b_codes[start - 1 : end],
+                    strict=True,
+                )
+            ]
+
+        current = [absent] * width
+        row_back = bytearray(width)
+        filled = False
+        running = absent  # the finished value of the cell to the left
+
+        for cell in range(width):
+            best = diagonal_candidates[cell]
+            move = DIAGONAL
+            up = up_candidates[cell]
+            if up > best:
+                best, move = up, UP
+            if best == absent:
+                move = 0
+            if running != absent:
+                score = running + gap_score
+                if score > best:
+                    best, move = score, LEFT
+            if move:
+                current[cell] = best
+                row_back[cell] = move
+                running = best
+                filled = True
+            else:
+                running = absent
+
+        if not filled:
+            raise AlignmentImpossible(
+                f"band of {band} was too narrow at row {i}; widen it or use a real aligner"
+            )
+
+        traceback.append((low, row_back))
+        previous, previous_low, previous_high = current, low, high
 
     # Walk back from the corner. If the band excluded the true corner, start from the
     # best reachable cell on the last row rather than failing.
     i, j = n, m
-    if j not in previous:
-        j = max(previous, key=lambda k: previous[k])
+    index = m - previous_low
+    if not (0 <= index < len(previous)) or previous[index] == absent:
+        best = absent
+        for offset, value in enumerate(previous):
+            if value > best:
+                best, j = value, previous_low + offset
 
     top: list[str] = []
     bottom: list[str] = []
 
     while i > 0 or j > 0:
-        move = traceback[i].get(j) if i < len(traceback) else None
+        move = 0
+        if i < len(traceback):
+            row_low, row_back = traceback[i]
+            cell = j - row_low
+            if 0 <= cell < len(row_back):
+                move = row_back[cell]
         if i == 0:
             top.append(GAP)
             bottom.append(b[j - 1])
             j -= 1
-        elif j == 0 or move == "U":
+        elif j == 0 or move == UP:
             top.append(a[i - 1])
             bottom.append(GAP)
             i -= 1
-        elif move == "L":
+        elif move == LEFT:
             top.append(GAP)
             bottom.append(b[j - 1])
             j -= 1
-        elif move == "D":
+        elif move == DIAGONAL:
             top.append(a[i - 1])
             bottom.append(b[j - 1])
             i -= 1
@@ -291,6 +347,7 @@ def align(
     check: bool = True,
     names: Sequence[str] | None = None,
     min_identity: float = 0.7,
+    progress: Callable[[int, int], None] | None = None,
 ) -> list[str]:
     """Centre-star multiple alignment. Returns sequences of equal length.
 
@@ -303,6 +360,10 @@ def align(
     submission passes the prefix guard whenever it is a small enough minority, and then
     aligns to noise: this is where it is caught. Pass `min_identity=0.0` to align
     anyway, having been told which rows are junk.
+
+    `progress`, if given, is called with `(done, total)` after each pairwise alignment.
+    Aligning a few hundred genomes in pure Python takes minutes, and a caller that
+    cannot say how far along it is looks hung.
     """
     if len(sequences) < 2:
         raise AlignmentImpossible("need at least two sequences")
@@ -316,12 +377,22 @@ def align(
     reference = sequences[centre]
 
     # For each sequence: where gaps must be inserted into the centre, and the partner row.
+    # Two records with the same sequence have the same pairwise alignment, and GenBank
+    # corpora are full of resubmitted duplicates - 250 CLCuMuV genomes are 206 distinct
+    # sequences - so each distinct sequence is aligned once and the result reused.
     pairwise: list[tuple[str, str]] = []
+    total = len(sequences)
+    seen: dict[str, tuple[str, str]] = {}
     for index, sequence in enumerate(sequences):
         if index == centre:
             pairwise.append((reference, reference))
         else:
-            pairwise.append(align_pair(reference, sequence, band=band))
+            cached = seen.get(sequence)
+            if cached is None:
+                cached = seen[sequence] = align_pair(reference, sequence, band=band)
+            pairwise.append(cached)
+        if progress is not None:
+            progress(index + 1, total)
 
     # The merged centre needs, at every position, the maximum number of gaps any pairwise
     # alignment inserted there.

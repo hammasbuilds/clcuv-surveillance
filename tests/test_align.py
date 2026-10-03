@@ -1,5 +1,6 @@
 """Tests for the banded centre-star aligner."""
 
+import importlib
 import random
 
 import pytest
@@ -255,3 +256,115 @@ def test_report_notices_variation():
 
 def test_report_on_nothing():
     assert alignment_report([]) == {"sequences": 0}
+
+
+# --- the optimisations do not move the answer -----------------------------
+#
+# `align_pair` is a hand-tuned banded DP with two shortcuts in it (identical sequences
+# return immediately; duplicate sequences are aligned once). Each is justified by an
+# argument about the scoring function, and an argument is not a test. So the banded
+# implementation is checked against a plain, unbanded Needleman-Wunsch written for
+# readability, with the same scores and the same tie-breaking.
+
+
+def _reference_align_pair(a: str, b: str, scoring: Scoring | None = None) -> tuple[str, str]:
+    """Textbook full-matrix Needleman-Wunsch. Slow, and obviously correct."""
+    scoring = scoring or Scoring()
+    n, m = len(a), len(b)
+    score = [[0] * (m + 1) for _ in range(n + 1)]
+    move = [[""] * (m + 1) for _ in range(n + 1)]
+
+    for i in range(1, n + 1):
+        score[i][0] = score[i - 1][0] + scoring.gap
+        move[i][0] = "U"
+    for j in range(1, m + 1):
+        score[0][j] = score[0][j - 1] + scoring.gap
+        move[0][j] = "L"
+
+    for i in range(1, n + 1):
+        for j in range(1, m + 1):
+            # Diagonal first, then up, then left - the same order of preference the
+            # banded implementation uses, so ties land the same way.
+            best = score[i - 1][j - 1] + scoring.pair(a[i - 1], b[j - 1])
+            chosen = "D"
+            if score[i - 1][j] + scoring.gap > best:
+                best, chosen = score[i - 1][j] + scoring.gap, "U"
+            if score[i][j - 1] + scoring.gap > best:
+                best, chosen = score[i][j - 1] + scoring.gap, "L"
+            score[i][j], move[i][j] = best, chosen
+
+    i, j = n, m
+    top: list[str] = []
+    bottom: list[str] = []
+    while i > 0 or j > 0:
+        step = move[i][j]
+        if step == "D":
+            top.append(a[i - 1])
+            bottom.append(b[j - 1])
+            i -= 1
+            j -= 1
+        elif step == "U":
+            top.append(a[i - 1])
+            bottom.append(GAP)
+            i -= 1
+        else:
+            top.append(GAP)
+            bottom.append(b[j - 1])
+            j -= 1
+    return "".join(reversed(top)), "".join(reversed(bottom))
+
+
+@pytest.mark.parametrize("seed", range(12))
+def test_the_banded_aligner_agrees_with_full_needleman_wunsch(seed):
+    rng = random.Random(seed)
+    a = _random_sequence(rng.randrange(40, 160), seed=seed + 500)
+    chars = list(a)
+    for _ in range(rng.randrange(0, 8)):
+        position = rng.randrange(len(chars))
+        action = rng.choice("sid")
+        if action == "s":
+            chars[position] = rng.choice("ACGTN")
+        elif action == "i":
+            chars.insert(position, rng.choice(BASES))
+        elif len(chars) > 2:
+            del chars[position]
+    b = "".join(chars)
+
+    assert align_pair(a, b) == _reference_align_pair(a, b)
+
+
+def test_the_identical_sequence_shortcut_matches_the_full_matrix():
+    a = _random_sequence(120, seed=600)
+    assert align_pair(a, a) == _reference_align_pair(a, a)
+
+
+def test_duplicate_sequences_are_aligned_once(monkeypatch):
+    # `clcuv.align` the function is re-exported from the package and shadows
+    # `clcuv.align` the module, so the module has to be fetched by name.
+    module = importlib.import_module("clcuv.align")
+
+    calls = []
+    real = module.align_pair
+
+    def counted(x, y, **kwargs):
+        calls.append(y)
+        return real(x, y, **kwargs)
+
+    monkeypatch.setattr(module, "align_pair", counted)
+
+    a = _random_sequence(200, seed=601)
+    b = _mutate(a, sites=5, seed=602)
+    aligned = align([a, b, b, b, a])
+
+    assert aligned[1] == aligned[2] == aligned[3]
+    assert aligned[0] == aligned[4]
+    # Four non-centre rows, two distinct sequences among them.
+    assert len(set(calls)) == len(calls) <= 2
+
+
+def test_progress_is_reported_once_per_sequence():
+    a = _random_sequence(150, seed=603)
+    sequences = [a, _mutate(a, sites=3, seed=604), _mutate(a, sites=4, seed=605)]
+    seen = []
+    align(sequences, progress=lambda done, total: seen.append((done, total)))
+    assert seen == [(1, 3), (2, 3), (3, 3)]
