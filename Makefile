@@ -21,4 +21,4 @@ fmt:  ## Auto-format
 	uv run ruff format src tests
 	uv run ruff check --fix src tests
 
-.PHONY: help install test real lint fmt
+.PHONY: help install test demo real realign lint fmt
