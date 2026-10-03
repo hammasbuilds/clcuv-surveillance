@@ -10,15 +10,21 @@ install:  ## Create .venv and install everything
 test:  ## Run the suite - no dependencies at all
 	uv run pytest -q
 
+demo:  ## The whole finding on the committed corpus (~30s, offline)
+	uv run python demo.py
+
 real:  ## Run the pipeline on real NCBI genomes (cached in data/)
 	uv run python scripts/real_data.py analyse
 
+realign:  ## Same, but realign from scratch instead of reusing the cached alignment
+	uv run python scripts/real_data.py analyse --no-cache
+
 lint:  ## Lint
-	uv run ruff check src tests
-	uv run ruff format --check src tests
+	uv run ruff check src tests scripts
+	uv run ruff format --check src tests scripts
 
 fmt:  ## Auto-format
-	uv run ruff format src tests
-	uv run ruff check --fix src tests
+	uv run ruff format src tests scripts
+	uv run ruff check --fix src tests scripts
 
 .PHONY: help install test demo real realign lint fmt
