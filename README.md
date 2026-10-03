@@ -430,8 +430,8 @@ no BLAST, no MAFFT, no API key. Abridged output:
 
 ```
 254 records parsed  |  250 are Cotton leaf curl Multan virus, 228 carry a plausible date
-alignment cached in clcuv_aligned.fasta.gz, reusing it
-                    |  width 3162, 30.4% invariant columns, 0 all-gap columns
+alignment cached in clcuv_aligned.fasta.gz, reusing it  |  width 3162,
+                       30.4% invariant columns, 0 all-gap columns
 837 variants above 1% against the consensus
 
 2019  Pakistan: Punjab    8 sequences ->  3 haplotypes  (x2.67)
