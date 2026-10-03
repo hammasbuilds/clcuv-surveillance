@@ -312,7 +312,7 @@ about 70% CPU — so these are slow-case numbers, not best-case ones:
 |---|---|---|
 | `python demo.py` | **31 s** | reads the committed corpus and the committed alignment |
 | `python scripts/real_data.py analyse --no-cache` | **7 m 04 s** | realigns all 250 genomes (6 m 44 s of it in the aligner), then the same analysis |
-| `pytest -q` | 25-40 s | 230 tests |
+| `pytest -q` | 25-60 s | 231 tests |
 
 The alignment is centre-star banded Needleman-Wunsch in pure Python with no
 dependencies, which is the trade this repository makes: ~1.6 s per genome pair instead of
@@ -326,7 +326,7 @@ print the same numbers.
 
 ## Tests
 
-**230 tests. No dependencies, no sequence downloads, no BLAST.**
+**231 tests. No dependencies, no sequence downloads, no BLAST.**
 
 Phylogenetics and selection are exact — an additive matrix has one correct tree, and
 dN/dS on synonymous-only changes is zero — so those are asserted rather than
@@ -392,7 +392,7 @@ git clone https://github.com/hammasbuilds/clcuv-surveillance
 cd clcuv-surveillance
 
 pip install -e ".[dev]"  # zero runtime dependencies; pytest/ruff for development
-pytest -q                # 230 tests in 25-40s, no sequence download
+pytest -q                # 231 tests in 25-60s, no sequence download
 python demo.py           # the whole finding on the committed corpus, ~31s, offline
 ```
 
