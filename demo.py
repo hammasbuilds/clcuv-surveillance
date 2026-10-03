@@ -40,8 +40,8 @@ def main() -> int:
     print("The corpus and its alignment are both committed, so this runs offline in", flush=True)
     print("about 30 seconds. If either is missing - a deleted cache, or a corpus", flush=True)
     print("re-downloaded from NCBI - the 250 genomes are realigned in pure Python,", flush=True)
-    print("which measured 7m04 end to end on a loaded 8-core laptop and prints its", flush=True)
-    print("progress. `python scripts/real_data.py analyse --no-cache` forces that.", flush=True)
+    print("which measured 7 to 13 minutes on an 8-core laptop, depending on what", flush=True)
+    print("else it is doing, and prints progress. `--no-cache` forces that path.", flush=True)
     print(flush=True)
 
     env = {**os.environ, "PYTHONIOENCODING": "utf-8"}

@@ -311,7 +311,7 @@ about 70% CPU — so these are slow-case numbers, not best-case ones:
 | Command | Time | What it does |
 |---|---|---|
 | `python demo.py` | **31 s** | reads the committed corpus and the committed alignment |
-| `python scripts/real_data.py analyse --no-cache` | **7 m 04 s** | realigns all 250 genomes (6 m 44 s of it in the aligner), then the same analysis |
+| `python scripts/real_data.py analyse --no-cache` | **7 m - 13 m** | realigns all 250 genomes (6 m 44 s of the 7 m 04 s best case is the aligner; the same run measured 12 m 48 s against a test suite on the other cores), then the same analysis |
 | `pytest -q` | 25-60 s | 231 tests |
 
 The alignment is centre-star banded Needleman-Wunsch in pure Python with no
@@ -443,7 +443,8 @@ one per haplotype    n=184  pooled= 0   stratified=0
 ```
 
 Add `--no-cache` to realign from scratch instead of reusing the committed alignment:
-7 m 04 s rather than 31 s, same numbers, progress on stderr while it works. On your own
+7-13 minutes rather than 31 seconds, progress on stderr while it works, and output that
+is identical line for line apart from the timing - which is how the cache is checked. On your own
 unaligned FASTA, `--band` is the runtime dial — the default 120 is sized for begomovirus
 genomes with short indels, and a narrower band is proportionally faster but will misalign
 anything with an indel wider than the band.
