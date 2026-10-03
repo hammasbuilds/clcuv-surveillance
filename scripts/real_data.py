@@ -1,7 +1,8 @@
 """Run the whole pipeline on real GenBank genomes, end to end.
 
-    uv run python scripts/real_data.py fetch     # ~60 genomes from NCBI, cached
-    uv run python scripts/real_data.py analyse   # align, atlas, emergence test
+    uv run python scripts/real_data.py fetch                # genomes from NCBI, cached
+    uv run python scripts/real_data.py analyse              # align, atlas, emergence test
+    uv run python scripts/real_data.py analyse --no-cache   # realign from scratch
 
 Nothing here is in the library. The library takes aligned sequences and metadata; this
 is the glue that gets them out of NCBI, and it is a script rather than a module because
@@ -19,6 +20,8 @@ an earlier version of this paragraph said "nine" after the corpus had already ma
 
 from __future__ import annotations
 
+import gzip
+import hashlib
 import json
 import re
 import sys
@@ -30,7 +33,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from clcuv.align import align, alignment_report  # noqa: E402
+from clcuv.align import align, alignment_report, stderr_progress  # noqa: E402
 from clcuv.atlas import Isolate, build_atlas, emerging_variants  # noqa: E402
 from clcuv.cli import MAX_YEAR, MIN_YEAR  # noqa: E402
 from clcuv.geo import normalise_isolates, resolved_strata  # noqa: E402
@@ -131,6 +134,80 @@ def year_of(date: str) -> str:
     return match.group(0) if match else ""
 
 
+# --- alignment: progress, and not doing it twice --------------------------
+
+ALIGNMENT_CACHE = DATA / "clcuv_aligned.fasta.gz"
+BAND = 120
+
+
+def _digest(sequences: list[str]) -> str:
+    """Identity of this exact input to the aligner, order included."""
+    payload = hashlib.sha256()
+    payload.update(f"v1 band={BAND} n={len(sequences)}\n".encode())
+    for sequence in sequences:
+        payload.update(sequence.encode())
+        payload.update(b"\n")
+    return payload.hexdigest()
+
+
+def _read_cached_alignment(sequences: list[str]) -> list[str] | None:
+    """The cached alignment, if it is an alignment of exactly these sequences.
+
+    The cache is keyed by a digest of the input, and then *verified*: every row with
+    its gaps removed must be the sequence it claims to align, and all rows must be the
+    same width. A stale or hand-edited cache is therefore not a wrong result, it is a
+    cache miss.
+    """
+    if not ALIGNMENT_CACHE.exists():
+        return None
+    try:
+        with gzip.open(ALIGNMENT_CACHE, "rt", encoding="utf-8") as handle:
+            header = handle.readline().strip()
+            rows = [line.strip() for line in handle if line.strip()]
+    except (OSError, EOFError, UnicodeDecodeError):
+        return None
+
+    if not header.startswith(">") or header[1:] != _digest(sequences):
+        return None
+    if len(rows) != len(sequences) or len({len(row) for row in rows}) != 1:
+        return None
+    if any(row.replace("-", "") != sequence for row, sequence in zip(rows, sequences, strict=True)):
+        return None
+    return rows
+
+
+def _write_cached_alignment(sequences: list[str], aligned: list[str]) -> None:
+    DATA.mkdir(exist_ok=True)
+    with gzip.open(ALIGNMENT_CACHE, "wt", encoding="utf-8", newline="\n") as handle:
+        handle.write(f">{_digest(sequences)}\n")
+        for row in aligned:
+            handle.write(f"{row}\n")
+
+
+def aligned_corpus(sequences: list[str], *, use_cache: bool = True) -> list[str]:
+    """Align the corpus, reusing a cached alignment of the same input if there is one.
+
+    The committed `data/clcuv.gb` never changes between runs, so neither does its
+    alignment. Recomputing it on every run spends minutes to arrive at a byte-identical
+    answer; the cache is checked against the input rather than trusted, so it cannot
+    change the result. `--no-cache` forces the full computation.
+    """
+    if use_cache:
+        cached = _read_cached_alignment(sequences)
+        if cached is not None:
+            print(f"\nalignment cached in {ALIGNMENT_CACHE.name}, reusing it", flush=True)
+            return cached
+
+    print(
+        f"\naligning {len(sequences)} genomes (pure Python; minutes, not seconds) ...",
+        flush=True,
+    )
+    aligned = align(sequences, band=BAND, progress=stderr_progress(len(sequences)))
+    if use_cache:
+        _write_cached_alignment(sequences, aligned)
+    return aligned
+
+
 # --- analysis -------------------------------------------------------------
 
 
@@ -153,7 +230,7 @@ def _consensus(aligned: list[str]) -> str:
     return "".join(out)
 
 
-def analyse() -> None:
+def analyse(*, use_cache: bool = True) -> None:
     records = parse_genbank(fetch().read_text())
     print(f"\n{len(records)} records parsed")
     print(f"  with country : {sum(1 for r in records if r['country'])}")
@@ -164,9 +241,8 @@ def analyse() -> None:
     muv = [r for r in records if r["organism"].startswith(SPECIES)]
     print(f"\n{len(muv)} are {SPECIES}; the rest are other CLCuV species and excluded")
 
-    print("\naligning ...", flush=True)
     started = time.time()
-    aligned = align([r["sequence"] for r in muv])
+    aligned = aligned_corpus([r["sequence"] for r in muv], use_cache=use_cache)
     print(f"  {time.time() - started:.1f}s")
     print(" ", json.dumps(alignment_report(aligned)))
 
@@ -210,7 +286,9 @@ def analyse() -> None:
     print("\n--- what survives each control ---")
     counts: dict[str, int] = {}
     for name, pool in (("all sequences", isolates), ("one per haplotype", collapsed)):
-        variants = build_atlas(pool, reference)
+        # The pooled atlas is the one already built above; rebuilding it was a scan of
+        # 250 x 3,162 columns for a result that cannot differ.
+        variants = atlas if pool is isolates else build_atlas(pool, reference)
         pooled = emerging_variants(variants, min_samples=8)
         stratified = emerging_variants(
             variants, min_samples=8, stratify=True, eligible_locations=eligible
@@ -237,6 +315,6 @@ if __name__ == "__main__":
     if command == "fetch":
         fetch(force="--force" in sys.argv)
     elif command == "analyse":
-        analyse()
+        analyse(use_cache="--no-cache" not in sys.argv)
     else:
-        sys.exit(f"usage: {sys.argv[0]} [fetch|analyse]")
+        sys.exit(f"usage: {sys.argv[0]} [fetch|analyse] [--no-cache]")

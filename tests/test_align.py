@@ -17,6 +17,7 @@ from clcuv.align import (
     low_identity_rows,
     odd_prefixes,
     reverse_complement,
+    stderr_progress,
 )
 
 BASES = "ACGT"
@@ -368,3 +369,51 @@ def test_progress_is_reported_once_per_sequence():
     seen = []
     align(sequences, progress=lambda done, total: seen.append((done, total)))
     assert seen == [(1, 3), (2, 3), (3, 3)]
+
+
+# --- progress reporting ---------------------------------------------------
+
+
+class _Stream:
+    def __init__(self, tty: bool):
+        self.tty = tty
+        self.text = ""
+
+    def isatty(self):
+        return self.tty
+
+    def write(self, text):
+        self.text += text
+
+    def flush(self):
+        pass
+
+
+def test_progress_on_a_captured_stream_is_one_line_per_tenth():
+    stream = _Stream(tty=False)
+    report = stderr_progress(50, stream=stream)
+    for done in range(1, 51):
+        report(done, 50)
+    lines = [line for line in stream.text.splitlines() if line.strip()]
+    assert len(lines) == 10
+    assert "\r" not in stream.text
+    assert lines[0].strip().startswith("aligning 5/50 (10%)")
+    assert lines[-1].strip().startswith("aligning 50/50 (100%)")
+
+
+def test_progress_on_a_terminal_rewrites_one_line():
+    stream = _Stream(tty=True)
+    report = stderr_progress(3, stream=stream)
+    for done in range(1, 4):
+        report(done, 3)
+    assert stream.text.count("\r") == 3
+    assert "aligning 1/3" in stream.text
+    assert stream.text.endswith("\n")
+
+
+def test_progress_always_reports_completion():
+    stream = _Stream(tty=False)
+    report = stderr_progress(7, stream=stream)
+    for done in range(1, 8):
+        report(done, 7)
+    assert "aligning 7/7 (100%)" in stream.text

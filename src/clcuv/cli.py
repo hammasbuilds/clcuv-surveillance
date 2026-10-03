@@ -22,7 +22,7 @@ import sys
 from collections import Counter
 from pathlib import Path
 
-from .align import align
+from .align import align, stderr_progress
 from .atlas import (
     build_atlas,
     emergence_sensitivity,
@@ -71,9 +71,7 @@ def _load(args) -> tuple[list, dict, list[str]]:
 
     isolates, skipped = isolates_from(records, metadata)
 
-    implausible = [
-        i.name for i in isolates if not (MIN_YEAR <= int(i.period[:4]) <= MAX_YEAR)
-    ]
+    implausible = [i.name for i in isolates if not (MIN_YEAR <= int(i.period[:4]) <= MAX_YEAR)]
     isolates = [i for i in isolates if i.name not in set(implausible)]
 
     notes = []
@@ -88,10 +86,13 @@ def _aligned_sequences(isolates, *, band: int) -> list[str]:
     widths = {len(i.sequence) for i in isolates}
     if len(widths) == 1 and any("-" in i.sequence for i in isolates):
         return [i.sequence for i in isolates]  # already aligned
+    # Unaligned input means a full centre-star alignment, which is minutes for a few
+    # hundred genomes. Progress goes to stderr so stdout (including --json) stays clean.
     return align(
         [i.sequence for i in isolates],
         band=band,
         names=[i.name for i in isolates],
+        progress=stderr_progress(len(isolates)),
     )
 
 
@@ -149,9 +150,7 @@ def analyse(args) -> int:
             "raw_strings": len(mapping),
             "strata": len({p.stratum for p in mapping.values()}),
             "resolved_strata": sorted(eligible),
-            "unresolved_strata": sorted(
-                {p.stratum for p in mapping.values() if not p.resolved}
-            ),
+            "unresolved_strata": sorted({p.stratum for p in mapping.values() if not p.resolved}),
             "flagged": sorted(
                 {p.raw for p in mapping.values() if p.flags and p.flags[0] != "country-only"}
             ),
@@ -286,7 +285,18 @@ def build_parser() -> argparse.ArgumentParser:
             type=Path,
             help="CSV with a name column plus period/date and location/country",
         )
-        sub.add_argument("--band", type=int, default=120, help="aligner band width")
+        sub.add_argument(
+            "--band",
+            type=int,
+            default=120,
+            help=(
+                "aligner band width in bases (default 120). Runtime is roughly linear "
+                "in it: 40 aligns about three times faster and is enough for isolates "
+                "differing by a few short indels, while a band narrower than the "
+                "largest indel between a sequence and the centre loses alignment "
+                "quality. Ignored when the input is already aligned."
+            ),
+        )
 
     run = subparsers.add_parser("analyse", help="which variant is rising, and is that real")
     common(run)

@@ -30,6 +30,8 @@ co-oriented. Use a real aligner for those; that is what `check_comparable` is te
 from __future__ import annotations
 
 import statistics
+import sys
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
@@ -481,6 +483,44 @@ def _low_identity_message(
         + more
         + "\nFix or drop them, or pass min_identity=0.0 to align them anyway."
     )
+
+
+def stderr_progress(
+    total: int, *, stream=None, label: str = "aligning"
+) -> Callable[[int, int], None]:
+    """A `progress` callback for `align()` that writes to stderr.
+
+    Aligning a few hundred genomes is minutes of pure-Python dynamic programming, and a
+    command that prints nothing while it happens is indistinguishable from a hung one -
+    which is how people kill it and conclude the tool is broken.
+
+    An interactive terminal gets one line that updates in place. A captured stream (CI,
+    a log file, `> out.txt`, a test) gets a new line at every 10% instead, because
+    carriage returns in a log are unreadable. Progress goes to stderr so that piping
+    stdout to a file still gets clean results.
+    """
+    stream = stream if stream is not None else sys.stderr
+    started = time.monotonic()
+    interactive = bool(getattr(stream, "isatty", lambda: False)())
+    step = max(1, total // 10)
+
+    def report(done: int, _total: int) -> None:
+        if not interactive and done % step and done != total:
+            return
+        elapsed = time.monotonic() - started
+        remaining = (elapsed / done) * (total - done) if done else 0.0
+        line = (
+            f"  {label} {done}/{total} ({done / total:.0%})  "
+            f"{elapsed:.0f}s elapsed, ~{remaining:.0f}s left"
+        )
+        if interactive:
+            print(f"\r{line}   ", end="", file=stream, flush=True)
+            if done == total:
+                print(file=stream, flush=True)
+        else:
+            print(line, file=stream, flush=True)
+
+    return report
 
 
 def alignment_report(aligned: Sequence[str]) -> dict:

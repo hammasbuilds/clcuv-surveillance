@@ -92,9 +92,7 @@ class TestAnalyse:
 
     def test_duplicate_metadata_name_is_a_clean_error(self, fasta, tmp_path, capsys):
         dup = tmp_path / "meta.csv"
-        dup.write_text(
-            "name,date,location\nA1,2019,Pakistan\nA1,2020,Pakistan\n", encoding="utf-8"
-        )
+        dup.write_text("name,date,location\nA1,2019,Pakistan\nA1,2020,Pakistan\n", encoding="utf-8")
         code = main(["analyse", "--fasta", str(fasta), "--metadata", str(dup)])
         assert code == 1
         assert "twice" in capsys.readouterr().err

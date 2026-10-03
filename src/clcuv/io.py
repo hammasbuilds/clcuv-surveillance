@@ -158,8 +158,7 @@ def read_metadata(path: str | Path) -> dict[str, dict[str, str]]:
         name_column = _column(fieldnames, "name")
         if not name_column:
             raise ValueError(
-                f"no name column in {path}: expected one of {COLUMNS['name']}, "
-                f"found {fieldnames}"
+                f"no name column in {path}: expected one of {COLUMNS['name']}, found {fieldnames}"
             )
         columns = {field: _column(fieldnames, field) for field in COLUMNS}
 
