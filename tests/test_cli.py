@@ -57,6 +57,15 @@ class TestAnalyse:
         out = capsys.readouterr().out
         assert "5 sequences read, 5 surveillable" in out
 
+    def test_counts_of_one_are_not_printed_as_plurals(self, fasta, metadata, capsys):
+        """A stratum of one read `1 seqs -> 1 haplotypes`, which reads like a bug."""
+        code = main(["analyse", "--fasta", str(fasta), "--metadata", str(metadata)])
+        assert code == 0
+        out = capsys.readouterr().out
+        assert "1 seqs" not in out
+        assert "1 haplotypes" not in out
+        assert "1 haplotype " in out
+
     def test_json_output_is_valid_json_with_the_expected_shape(self, fasta, metadata, capsys):
         code = main(["analyse", "--fasta", str(fasta), "--metadata", str(metadata), "--json"])
         assert code == 0

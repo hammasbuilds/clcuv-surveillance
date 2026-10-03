@@ -409,6 +409,14 @@ clcuv export  --fasta isolates.fasta --metadata isolates.csv --out deduped.fasta
 every sequence — see `clcuv analyse --help`. `analyse` prints the emergence result and the
 `min_samples` sweep around it together, because a count from one setting is not a finding.
 
+If the FASTA is **not** already aligned, the aligner runs first and that is where the time
+goes: 70 unaligned 2.7 kb genomes measured **1 m 58 s** at the default `--band 120` and
+**57 s** at `--band 40`, on the same loaded laptop as the numbers above, with progress on
+stderr throughout. The narrower band is not free — it realigned to 2,968 columns instead
+of 3,162, because a band narrower than an indel cannot place that indel. Pass sequences
+that are already aligned (equal length, gaps present) and the aligner is skipped
+entirely, which is the fast path for repeated analyses of the same set.
+
 ### On real genomes, in one command
 
 ```bash

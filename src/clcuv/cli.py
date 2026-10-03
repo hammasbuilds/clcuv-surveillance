@@ -208,9 +208,12 @@ def _print_report(result: dict, isolates, mapping) -> None:
             note = "   <- too clonal to test"
         else:
             note = ""
+        sequences, haplotypes = size["sequences"], size["haplotypes"]
         print(
-            f"  {period}  {location:<26} {size['sequences']:>3} seqs -> "
-            f"{size['haplotypes']:>3} haplotypes  (x{size['inflation']}){note}"
+            f"  {period}  {location:<26} {sequences:>3} "
+            f"{'sequence ' if sequences == 1 else 'sequences'} -> "
+            f"{haplotypes:>3} {'haplotype ' if haplotypes == 1 else 'haplotypes'}"
+            f"  (x{size['inflation']}){note}"
         )
 
     print(f"\n  {json.dumps(result['clonality'])}")
