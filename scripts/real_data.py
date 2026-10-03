@@ -272,9 +272,13 @@ def analyse(*, use_cache: bool = True) -> None:
     print("\n--- how many independent genomes are actually here? ---")
     for (period, location), size in effective_sample_sizes(isolates).items():
         note = "" if size["usable_for_statistics"] else "   <- too clonal to test"
+        sequences = size["sequences"]
+        haplotypes = size["haplotypes"]
         print(
-            f"  {period}  {location:<30} {size['sequences']:>2} seqs "
-            f"-> {size['haplotypes']:>2} haplotypes  (x{size['inflation']}){note}"
+            f"  {period}  {location:<30} {sequences:>2} "
+            f"{'sequence ' if sequences == 1 else 'sequences'} "
+            f"-> {haplotypes:>2} {'haplotype ' if haplotypes == 1 else 'haplotypes'}"
+            f"  (x{size['inflation']}){note}"
         )
 
     collapsed, report = collapse_clonal(isolates)

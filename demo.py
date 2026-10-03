@@ -37,8 +37,11 @@ ROOT = Path(__file__).resolve().parent
 def main() -> int:
     print("clcuv-surveillance: how much of this dataset is independent evidence?", flush=True)
     print(flush=True)
-    print("First run downloads genomes from NCBI and caches them under data/;", flush=True)
-    print("later runs are offline. Aligning 250 genomes takes roughly two minutes.", flush=True)
+    print("The corpus and its alignment are both committed, so this runs offline in", flush=True)
+    print("about 30 seconds. If either is missing - a deleted cache, or a corpus", flush=True)
+    print("re-downloaded from NCBI - the 250 genomes are realigned in pure Python,", flush=True)
+    print("which measured 7m04 end to end on a loaded 8-core laptop and prints its", flush=True)
+    print("progress. `python scripts/real_data.py analyse --no-cache` forces that.", flush=True)
     print(flush=True)
 
     env = {**os.environ, "PYTHONIOENCODING": "utf-8"}

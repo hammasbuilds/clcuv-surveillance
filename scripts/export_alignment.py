@@ -22,9 +22,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from real_data import SPECIES, fetch, parse_genbank, year_of  # noqa: E402
+from real_data import SPECIES, aligned_corpus, fetch, parse_genbank, year_of  # noqa: E402
 
-from clcuv.align import align  # noqa: E402
 from clcuv.atlas import Isolate  # noqa: E402
 from clcuv.haplotype import collapse_clonal  # noqa: E402
 
@@ -36,9 +35,10 @@ def main() -> int:
     muv = [r for r in records if r["organism"].startswith(SPECIES)]
     print(f"{len(records)} records, {len(muv)} are {SPECIES}")
 
-    print("aligning ...", flush=True)
     started = time.time()
-    aligned = align([r["sequence"] for r in muv])
+    # Same cached alignment the analysis uses, progress reported on stderr: the export
+    # recomputing it was six minutes spent on a byte-identical result.
+    aligned = aligned_corpus([r["sequence"] for r in muv])
     print(f"  {time.time() - started:.1f}s, {len(aligned[0])} columns")
 
     isolates = [

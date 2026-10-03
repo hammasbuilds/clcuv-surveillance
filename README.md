@@ -235,29 +235,98 @@ than the evidence supports. 250 records, 210 haplotypes.
 
 ## Input
 
-![input](docs/images/input.png)
+GenBank records as NCBI serves them — `data/clcuv.gb`, committed, 254 of them. The three
+fields that make a record surveillance data rather than a sequence are the organism, the
+place and the date:
+
+```
+LOCUS       PZ547674                2739 bp    DNA     linear   VRL 02-SEP-2026
+  ORGANISM  Cotton leaf curl Multan virus
+     source          1..2739
+                     /host="cotton"
+                     /geo_loc_name="India"
+                     /collection_date="21-Aug-2022"
+ORIGIN
+        1 accggatggc cgcgcgattt ttttgtgggc ccccgattta tgagattgct ccctcaaagc
+       61 taaataacgc tcccgcacac tataagtact tgcgcactaa gtttcaaatt caaacatgtg
+```
+
+`collection_date` arrives as `2019`, `May-2019`, `01-May-2019` and `2015-01` in this one
+file; `geo_loc_name` as `Pakistan: Punjab`, `Pakistan: Punjab province` and
+`Pakistan: Punjab,Bahawalpur`. Both are normalised before anything is counted. Your own
+data goes in as FASTA plus a metadata CSV instead — see `clcuv analyse`.
 
 ## Output
 
-`make real`
+`python demo.py` — the real output, abridged in the middle only:
 
-![output](docs/images/output.png)
+```
+254 records parsed
+  with country : 248
+  with date    : 229
 
-*Eight genomes from Punjab in 2021 are one haplotype — the same infection sequenced eight
+250 are Cotton leaf curl Multan virus; the rest are other CLCuV species and excluded
+
+alignment cached in clcuv_aligned.fasta.gz, reusing it
+  0.1s
+  {"sequences": 250, "width": 3162, "all_gap_columns": 0, "invariant_columns": 962,
+   "invariant_fraction": 0.3042, "gap_fraction": 0.1335}
+  consensus: 3162 bp, 449 uncalled
+
+228 have both a year and a place, and can be surveilled
+
+--- how many independent genomes are actually here? ---
+  ...
+  2019  Pakistan: Punjab                8 sequences ->  3 haplotypes  (x2.67)   <- too clonal to test
+  2020  Pakistan: Punjab               13 sequences -> 11 haplotypes  (x1.18)
+  2021  China: Guangdong               25 sequences -> 21 haplotypes  (x1.19)
+  2021  Pakistan: Punjab                8 sequences ->  1 haplotype   (x8.0)    <- too clonal to test
+  2021  Pakistan: Sindh                 5 sequences ->  1 haplotype   (x5.0)    <- too clonal to test
+  ...
+
+  {"isolates": 228, "haplotypes": 184, "inflation": 1.239, "largest_clonal_group": 8,
+   "strata": 67, "worst_strata": {"2021/Pakistan: Punjab": "8 -> 1",
+   "2019/Pakistan: Punjab": "8 -> 3", "2021/Pakistan: Sindh": "5 -> 1"}}
+
+837 variants above 1% against the consensus
+
+--- what survives each control ---
+  all sequences        n=228 pooled=92  stratified=76
+  one per haplotype    n=184 pooled=0   stratified=0
+```
+
+Eight genomes from Punjab in 2021 are one haplotype — the same infection sequenced eight
 times. Counting them as eight independent observations is part of what makes 76
 "emerging" variants survive a pooled test and a stratified one. Counting each clonal
-group once produces none.*
+group once produces none.
 
-*The zero is the result. Seventy-six variants that looked real under both tests had no
+**The zero is the result.** Seventy-six variants that looked real under both tests had no
 independent support at all, and the dataset cannot answer the question it was asked.
-(The screenshots above are from an earlier, smaller run of this same pipeline and predate
-the location-normalisation fix; the numbers in the body text above are current.)*
+
+### How long it takes
+
+Measured on an 8-core Windows laptop, CPython 3.14, while other jobs held the machine at
+about 70% CPU — so these are slow-case numbers, not best-case ones:
+
+| Command | Time | What it does |
+|---|---|---|
+| `python demo.py` | **31 s** | reads the committed corpus and the committed alignment |
+| `python scripts/real_data.py analyse --no-cache` | **7 m 04 s** | realigns all 250 genomes (6 m 44 s of it in the aligner), then the same analysis |
+| `pytest -q` | 25-40 s | 230 tests |
+
+The alignment is centre-star banded Needleman-Wunsch in pure Python with no
+dependencies, which is the trade this repository makes: ~1.6 s per genome pair instead of
+installing MAFFT. Because the committed corpus never changes, its alignment is committed
+too (`data/clcuv_aligned.fasta.gz`, 24 KB) and reused — keyed by a digest of the input
+sequences and then verified row by row against them, so a stale cache is a cache miss
+rather than a wrong answer. `--no-cache` always does the full computation, and both paths
+print the same numbers.
 
 ---
 
 ## Tests
 
-**203 tests. No dependencies, no sequence downloads, no BLAST.**
+**230 tests. No dependencies, no sequence downloads, no BLAST.**
 
 Phylogenetics and selection are exact — an additive matrix has one correct tree, and
 dN/dS on synonymous-only changes is zero — so those are asserted rather than
@@ -274,6 +343,8 @@ approximated.
 | Classification | known assigned, **novel refused**, unfitted refuses, length-invariant distance |
 | Recombination | block swap and breakpoint located, non-recombinant clean |
 | **Alignment** | bases always recoverable, deletions gapped, insertions get separate columns, **rotated circular genomes refused**, length mismatch refused, one odd sequence tolerated |
+| **Aligner speed-ups** | **the banded DP agrees with full unbanded Needleman-Wunsch** over randomised indel cases, the identical-sequence shortcut matches the full matrix, duplicates aligned once, progress reported per sequence |
+| **Alignment cache** | round-trips, misses on a different or reordered corpus, **rejects rows that are not the sequences they claim**, ragged rows refused, corrupt file is a miss not a crash, `--no-cache` realigns and does not overwrite |
 | **Clonality** | clonal batch collapses to one, distinct sequences survive, identical sequences in different places/years kept, ambiguity skipped, **the false positive reproduced then removed**, a rise with real support kept |
 | **Stratification** | the geographic confounder reproduced, then discarded; a within-location rise confirmed; one-period locations confirm nothing |
 | **Geo normalisation** | spelling/casing/district variants merge to one stratum, a designed reference mismatch is not reported as a mutation |
@@ -301,7 +372,7 @@ approximated.
   identical *because* of that. Distinguishing the two needs sampling metadata GenBank
   does not carry, so the tool reports both numbers rather than choosing.
 - **The real-data conclusion is negative.** After all three controls, no variant in the
-  53 public CLCuMuV genomes can be shown to be emerging. That is a limit of the public
+  250 public CLCuMuV genomes can be shown to be emerging. That is a limit of the public
   data, not of the method, and it is reported rather than worked around.
 
 ## Keywords
@@ -321,7 +392,8 @@ git clone https://github.com/hammasbuilds/clcuv-surveillance
 cd clcuv-surveillance
 
 pip install -e ".[dev]"  # zero runtime dependencies; pytest/ruff for development
-pytest -q                # 203 tests, no sequence download
+pytest -q                # 230 tests in 25-40s, no sequence download
+python demo.py           # the whole finding on the committed corpus, ~31s, offline
 ```
 
 ### On your own genomes
@@ -350,16 +422,23 @@ no BLAST, no MAFFT, no API key. Abridged output:
 
 ```
 254 records parsed  |  250 are Cotton leaf curl Multan virus, 228 carry a plausible date
-aligning ... 109s   |  width 3162, 30.4% invariant columns, 0 all-gap columns
+alignment cached in clcuv_aligned.fasta.gz, reusing it
+                    |  width 3162, 30.4% invariant columns, 0 all-gap columns
 837 variants above 1% against the consensus
 
-2019  Pakistan: Punjab    8 seqs ->  3 haplotypes  (x2.67)
-2021  Pakistan: Punjab    8 seqs ->  1 haplotype   (x8.0)    <- too clonal to test
-2021  Pakistan: Sindh     5 seqs ->  1 haplotype   (x5.0)    <- too clonal to test
+2019  Pakistan: Punjab    8 sequences ->  3 haplotypes  (x2.67)
+2021  Pakistan: Punjab    8 sequences ->  1 haplotype   (x8.0)    <- too clonal to test
+2021  Pakistan: Sindh     5 sequences ->  1 haplotype   (x5.0)    <- too clonal to test
 
 all sequences        n=228  pooled=92  stratified=76
 one per haplotype    n=184  pooled= 0   stratified=0
 ```
+
+Add `--no-cache` to realign from scratch instead of reusing the committed alignment:
+7 m 04 s rather than 31 s, same numbers, progress on stderr while it works. On your own
+unaligned FASTA, `--band` is the runtime dial — the default 120 is sized for begomovirus
+genomes with short indels, and a narrower band is proportionally faster but will misalign
+anything with an indel wider than the band.
 
 ```python
 from clcuv import Isolate, build_atlas, emerging_variants, selection_pressure
